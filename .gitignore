@@ -1,0 +1,32 @@
+# Virtual environments
+venv/
+venv-chatterbox/
+
+# Generated audio files
+voice_samples/*.wav
+spoken_affirmations/*.wav
+voice_reference.wav
+spoken_messages_*.wav
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+
+*.wav
+!tests/fixtures/*.wav
+
+# Pytest
+.pytest_cache/
+
+positive_messages.txt
