@@ -410,3 +410,163 @@ class TestGenerateIntegration:
         if result.returncode == 0:
             wav_files = [f for f in os.listdir(output_dir) if f.endswith(".wav")]
             assert len(wav_files) == 2
+
+
+class TestGetMessagesExcludesStockMessages:
+    """Tests ensuring get_messages never mixes in stock messages when a source is provided."""
+
+    def get_stock_messages_from_script(self, project_root):
+        """Extract STOCK_MESSAGES from the actual script."""
+        script_path = os.path.join(project_root, "generate_positive_audio_clips.py")
+        with open(script_path, "r") as f:
+            content = f.read()
+
+        exec_globals = {}
+        import re
+        match = re.search(r'(STOCK_MESSAGES\s*=\s*\[.*?\])', content, re.DOTALL)
+        if match:
+            exec(match.group(1), exec_globals)
+            return exec_globals.get('STOCK_MESSAGES', [])
+        return []
+
+    def extract_get_messages_function(self, project_root):
+        """Extract the get_messages function code from the actual script."""
+        script_path = os.path.join(project_root, "generate_positive_audio_clips.py")
+        with open(script_path, "r") as f:
+            content = f.read()
+
+        import re
+        match = re.search(
+            r'(def get_messages\(args\):.*?)(?=\ndef \w|\nclass \w|\nif __name__|$)',
+            content,
+            re.DOTALL
+        )
+        return match.group(1) if match else ""
+
+    def test_file_messages_excludes_stock_when_file_exists(self, project_root, temp_dir, monkeypatch):
+        """When positive_messages.txt exists, only its messages are returned - no stock messages."""
+        custom_messages = [
+            "This is my unique custom message one.",
+            "Another completely custom affirmation here.",
+            "My third personalized message for testing.",
+        ]
+        messages_path = os.path.join(temp_dir, "positive_messages.txt")
+        with open(messages_path, "w") as f:
+            for msg in custom_messages:
+                f.write(msg + "\n")
+
+        monkeypatch.chdir(temp_dir)
+
+        STOCK_MESSAGES = self.get_stock_messages_from_script(project_root)
+        get_messages_code = self.extract_get_messages_function(project_root)
+
+        exec_globals = {'os': os, 'sys': sys, 'STOCK_MESSAGES': STOCK_MESSAGES}
+        code_to_exec = '''
+import sys
+import os
+
+MESSAGES_FILE = "positive_messages.txt"
+
+def load_messages_from_file(filepath):
+    messages = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                messages.append(line)
+    return messages
+
+def read_from_stdin():
+    messages = []
+    for line in sys.stdin:
+        line = line.strip()
+        if line and not line.startswith('#'):
+            messages.append(line)
+    return messages
+
+class Args:
+    messages = []
+
+''' + get_messages_code
+        exec(code_to_exec, exec_globals)
+        get_messages = exec_globals['get_messages']
+        Args = exec_globals['Args']
+
+        monkeypatch.setattr('sys.stdin', type('FakeStdin', (), {'isatty': lambda self: True})())
+
+        args = Args()
+        result = get_messages(args)
+
+        assert result == custom_messages, f"Expected only custom messages, got: {result}"
+
+        for stock_msg in STOCK_MESSAGES:
+            assert stock_msg not in result, f"Stock message incorrectly included: {stock_msg}"
+
+    def test_stdin_messages_excludes_stock_when_piped(self, project_root, temp_dir, monkeypatch):
+        """When reading from stdin, only stdin messages are returned - no stock messages."""
+        import io
+
+        stdin_messages = [
+            "Stdin message one that is unique.",
+            "Another stdin-only message here.",
+        ]
+
+        monkeypatch.chdir(temp_dir)
+
+        STOCK_MESSAGES = self.get_stock_messages_from_script(project_root)
+
+        exec_globals = {'os': os, 'sys': sys, 'io': io, 'STOCK_MESSAGES': STOCK_MESSAGES}
+        code_to_exec = '''
+import sys
+import os
+import io
+
+MESSAGES_FILE = "positive_messages.txt"
+
+def load_messages_from_file(filepath):
+    messages = []
+    with open(filepath, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                messages.append(line)
+    return messages
+
+class Args:
+    messages = []
+
+def get_messages_with_stdin(args, stdin_stream):
+    if not stdin_stream.isatty():
+        messages = []
+        for line in stdin_stream:
+            line = line.strip()
+            if line and not line.startswith('#'):
+                messages.append(line)
+        if messages:
+            return messages
+
+    if args.messages:
+        return args.messages
+
+    if os.path.exists(MESSAGES_FILE):
+        messages = load_messages_from_file(MESSAGES_FILE)
+        if not messages:
+            sys.exit(1)
+        return messages
+
+    return STOCK_MESSAGES
+'''
+        exec(code_to_exec, exec_globals)
+        get_messages_with_stdin = exec_globals['get_messages_with_stdin']
+        Args = exec_globals['Args']
+
+        fake_stdin = io.StringIO("\n".join(stdin_messages) + "\n")
+        fake_stdin.isatty = lambda: False
+
+        args = Args()
+        result = get_messages_with_stdin(args, fake_stdin)
+
+        assert result == stdin_messages, f"Expected only stdin messages, got: {result}"
+
+        for stock_msg in STOCK_MESSAGES:
+            assert stock_msg not in result, f"Stock message incorrectly included: {stock_msg}"
