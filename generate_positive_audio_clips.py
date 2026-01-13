@@ -3,14 +3,14 @@
 """
 Generate a series of audio files from text strings using your cloned voice.
 
-By default, each message generates two audio files with different exaggeration
-levels (0.5 and 0.85) for variety in the weaving output. Use -e to generate
+By default, each message generates three audio files with different exaggeration
+levels (0.65, 0.8, and 0.9) for variety in the weaving output. Use -e to generate
 only a single version at a specific exaggeration level.
 
 Usage:
     ./generate_positive_audio_clips.py              # Read from positive_messages.txt
     ./generate_positive_audio_clips.py -n 5         # Sample 5 messages from the file
-    ./generate_positive_audio_clips.py -e 0.5       # Single version at exaggeration 0.5
+    ./generate_positive_audio_clips.py -e 0.65      # Single version at exaggeration 0.65
     ./generate_positive_audio_clips.py "Hi" "Bye"   # Custom strings (bypass file)
     cat messages.txt | ./generate_positive_audio_clips.py   # Read from stdin
 """
@@ -37,7 +37,7 @@ REFERENCE_FILE = "voice_reference.wav"
 DEFAULT_OUTPUT_DIR = "spoken_affirmations"
 MESSAGES_FILE = "positive_messages.txt"
 
-EXAGGERATION_LEVELS = [0.5, 0.85]
+EXAGGERATION_LEVELS = [0.65, 0.8, 0.9]
 
 # Stock positive affirmations (used to generate default file)
 STOCK_MESSAGES = [
@@ -166,7 +166,7 @@ def main():
     parser.add_argument("-o", "--output-dir", default=DEFAULT_OUTPUT_DIR,
                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
     parser.add_argument("-e", "--exaggeration", type=float, default=None,
-                        help="Emotion exaggeration (0-1). If omitted, generates both 0.5 and 0.85 versions")
+                        help="Emotion exaggeration (0-1). If omitted, generates 0.65, 0.8, and 0.9 versions")
     args = parser.parse_args()
 
     messages = get_messages(args)

@@ -30,7 +30,13 @@ This will:
 afplay spoken_messages_001.wav      # Listen (use headphones!)
 ```
 
-### 1. Record samples of your voice
+### 1. Create your positive messages (optional)
+
+Create a `positive_messages.txt` file with your own affirmations - one message per line. Lines starting with `#` are ignored.
+
+This step is optional. If you skip it, you'll be prompted to generate the file from built-in stock affirmations when you run the generation script. You can customize your messages anytime by editing `positive_messages.txt`.
+
+### 2. Record samples of your voice
 
 ```bash
 ./record.py
@@ -38,7 +44,7 @@ afplay spoken_messages_001.wav      # Listen (use headphones!)
 
 Read the displayed paragraphs naturally. Press Enter to start, Ctrl+C to stop. Record 2-3 samples (30+ seconds total recommended).
 
-### 2. Prepare voice reference
+### 3. Prepare voice reference
 
 ```bash
 ./prepare.py
@@ -46,7 +52,7 @@ Read the displayed paragraphs naturally. Press Enter to start, Ctrl+C to stop. R
 
 Combines your voice samples into a single reference file for voice cloning.
 
-### 3. Generate affirmations
+### 4. Generate affirmations
 
 ```bash
 ./generate_positive_audio_clips.py
@@ -76,7 +82,7 @@ cat my_messages.txt | ./generate_positive_audio_clips.py -n 3   # sample 3
 
 Edit `positive_messages.txt` to customize your affirmations. Lines starting with `#` are ignored.
 
-### 4. Weave into soundscape
+### 5. Weave into soundscape
 
 ```bash
 ./weave.py
@@ -92,7 +98,7 @@ To create a shorter mix, specify a target duration in seconds:
 
 This selects a subset of clips to produce roughly a 60-second output. The last clip plays to completion, so actual duration may slightly exceed the target.
 
-### 5. Listen
+### 6. Listen
 
 ```bash
 # macOS
