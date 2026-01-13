@@ -2,13 +2,6 @@
 
 Your voice, your affirmations, woven into an immersive stereo soundscape.
 
-## Features
-
-- **Voice Recording** - Record voice samples with guided prompts
-- **Voice Cloning** - Clone your voice using Chatterbox TTS (zero-shot, no training required)
-- **Text-to-Speech** - Generate speech from any text in your cloned voice
-- **Spatial Audio Weaving** - Layer clips with stereo positioning for an immersive experience
-
 ## Requirements
 
 - macOS or Linux

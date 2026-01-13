@@ -39,6 +39,13 @@ WEAVE_INITIAL_CLIPS = 2       # Number of clips to use initial delay for
 MIN_CLIPS_FOR_INTRO = 3       # Need at least 3 clips per side for full intro
 NO_OVERLAP_DURATION_MS = 30000  # No overlap on same channel for first 30 seconds
 
+# Wave pattern timing (for durations >= 60 seconds)
+WAVE_MIN_DURATION_MS = 60000        # Minimum duration to enable wave patterns
+WAVE_BOMBARDMENT_DURATION_MS = 20000  # Hold at bombardment for ~20 seconds
+WAVE_RELAXED_DURATION_MS = 40000      # Relaxed period for ~40 seconds
+WAVE_RAMP_DURATION_MS = 5000          # Time to ramp up/down between modes
+BOMBARDMENT_PROBABILITY = 0.30        # 30% of time in bombardment mode
+
 # Fade curves for smooth transitions
 FADE_IN_MS = 100    # Quick fade in at clip start
 FADE_OUT_MS = 500   # Longer fade out for smooth overlap transitions
@@ -58,87 +65,105 @@ PROFILE_B = {
 }
 
 
-def estimate_duration(clips, overlap_ms, delay_ms):
-    """Estimate final output duration for a list of clips."""
+def get_wave_intensity(time_ms):
+    """
+    Calculate the overlap intensity (0.0 to 1.0) at a given time point.
+    
+    Wave pattern:
+    - Ramp up over WAVE_RAMP_DURATION_MS
+    - Hold at bombardment (1.0) for WAVE_BOMBARDMENT_DURATION_MS
+    - Ramp down over WAVE_RAMP_DURATION_MS
+    - Hold at relaxed (0.0) for remaining WAVE_RELAXED_DURATION_MS
+    
+    Returns intensity from 0.0 (relaxed, no intra-channel overlap) 
+    to 1.0 (bombardment, full overlap).
+    """
+    wave_cycle_ms = (
+        WAVE_RAMP_DURATION_MS +
+        WAVE_BOMBARDMENT_DURATION_MS +
+        WAVE_RAMP_DURATION_MS +
+        WAVE_RELAXED_DURATION_MS
+    )
+    
+    position_in_cycle = time_ms % wave_cycle_ms
+    
+    # Phase 1: Ramp up (0 to WAVE_RAMP_DURATION_MS)
+    ramp_up_end = WAVE_RAMP_DURATION_MS
+    if position_in_cycle < ramp_up_end:
+        return position_in_cycle / WAVE_RAMP_DURATION_MS
+    
+    # Phase 2: Bombardment hold (ramp_up_end to bombardment_end)
+    bombardment_end = ramp_up_end + WAVE_BOMBARDMENT_DURATION_MS
+    if position_in_cycle < bombardment_end:
+        return 1.0
+    
+    # Phase 3: Ramp down (bombardment_end to ramp_down_end)
+    ramp_down_end = bombardment_end + WAVE_RAMP_DURATION_MS
+    if position_in_cycle < ramp_down_end:
+        elapsed_in_ramp = position_in_cycle - bombardment_end
+        return 1.0 - (elapsed_in_ramp / WAVE_RAMP_DURATION_MS)
+    
+    # Phase 4: Relaxed hold (ramp_down_end to end of cycle)
+    return 0.0
+
+
+def estimate_duration(clips, overlap_ms, delay_ms, wave_mode=False):
+    """
+    Estimate final output duration for a list of clips.
+
+    In wave mode, overlap only occurs during bombardment phases (~30% of time)
+    and only on one channel at a time, so effective overlap is much less.
+    """
     if not clips:
         return delay_ms
 
     total_clip_ms = sum(len(clip) for _, clip in clips)
-    overlap_reduction = (len(clips) - 1) * overlap_ms
+
+    if wave_mode:
+        effective_overlap = overlap_ms * BOMBARDMENT_PROBABILITY * 0.5
+    else:
+        effective_overlap = overlap_ms
+
+    overlap_reduction = (len(clips) - 1) * effective_overlap
     stream_duration = total_clip_ms - overlap_reduction
 
     return stream_duration + delay_ms
 
 
-def select_clips_for_duration(clips, target_ms, overlap_ms, delay_ms):
+def build_clip_pool_for_duration(clips, target_ms, overlap_ms, delay_ms):
     """
-    Select a subset of clips to approximately match target duration.
-    Uses iterative refinement algorithm, O(n²) worst case.
+    Build a clip pool that uses all clips, repeating as needed to reach target duration.
     """
     if not clips:
         return []
 
-    available = clips.copy()
-    random.shuffle(available)
-    selected = []
+    wave_mode = target_ms >= WAVE_MIN_DURATION_MS
 
-    # Greedy initial selection: add clips until we reach/exceed target
-    for clip in available:
-        selected.append(clip)
-        if estimate_duration(selected, overlap_ms, delay_ms) >= target_ms:
-            break
+    pool = clips.copy()
+    random.shuffle(pool)
 
-    # Iterative refinement
-    max_iterations = len(clips) ** 2
-    unselected = [c for c in available if c not in selected]
+    current_duration = estimate_duration(pool, overlap_ms, delay_ms, wave_mode)
 
-    for _ in range(max_iterations):
-        current_duration = estimate_duration(selected, overlap_ms, delay_ms)
-        diff = current_duration - target_ms
+    # Keep adding full passes of shuffled clips until we reach target
+    while current_duration < target_ms:
+        additional = clips.copy()
+        random.shuffle(additional)
+        pool.extend(additional)
+        current_duration = estimate_duration(pool, overlap_ms, delay_ms, wave_mode)
 
-        if abs(diff) <= DURATION_TOLERANCE_MS:
-            break
+    # Trim excess clips to get closer to target
+    while len(pool) > len(clips):
+        test_pool = pool[:-1]
+        test_duration = estimate_duration(test_pool, overlap_ms, delay_ms, wave_mode)
 
-        if diff < 0 and unselected:
-            # Too short: add the clip that gets us closest to target
-            best_clip = None
-            best_diff = float('inf')
-
-            for clip in unselected:
-                test_selected = selected + [clip]
-                new_duration = estimate_duration(test_selected, overlap_ms, delay_ms)
-                new_diff = abs(new_duration - target_ms)
-
-                if new_diff < best_diff:
-                    best_diff = new_diff
-                    best_clip = clip
-
-            if best_clip:
-                selected.append(best_clip)
-                unselected.remove(best_clip)
-
-        elif diff > 0 and len(selected) > 1:
-            # Too long: remove the clip that gets us closest to target
-            best_idx = None
-            best_diff = float('inf')
-
-            for i in range(len(selected)):
-                test_selected = selected[:i] + selected[i+1:]
-                new_duration = estimate_duration(test_selected, overlap_ms, delay_ms)
-                new_diff = abs(new_duration - target_ms)
-
-                if new_diff < best_diff:
-                    best_diff = new_diff
-                    best_idx = i
-
-            if best_idx is not None:
-                removed = selected.pop(best_idx)
-                unselected.append(removed)
-
+        if abs(test_duration - target_ms) < abs(current_duration - target_ms):
+            pool = test_pool
+            current_duration = test_duration
         else:
             break
 
-    return selected
+    random.shuffle(pool)
+    return pool
 
 
 def make_mono(clip):
@@ -252,6 +277,115 @@ def sequence_clips_with_overlap_and_positions(clips, positions, overlap_ms, no_o
     return result
 
 
+def build_wave_weave(left_clips, right_clips, left_positions, right_positions, start_time_ms=0):
+    """
+    Build a wave-based weave where overlap intensity varies over time.
+    
+    At intensity 0.0 (relaxed): No intra-channel overlap. Left and right clips
+    interleave so at most one L and one R play simultaneously.
+    
+    At intensity > 0 (bombardment): Only ONE channel gets intra-channel overlap
+    at a time. The channel alternates each wave cycle to prevent both channels
+    from overlapping simultaneously (which creates too much audio density).
+    
+    Intensity varies according to get_wave_intensity() based on time position.
+    
+    Returns a stereo AudioSegment.
+    """
+    if not left_clips or not right_clips:
+        return AudioSegment.silent(duration=0, frame_rate=44100).set_channels(2)
+    
+    profiles = [PROFILE_A, PROFILE_B]
+    result = AudioSegment.silent(duration=0, frame_rate=44100).set_channels(2)
+    
+    left_idx = 0
+    right_idx = 0
+    left_profile_idx = 0
+    right_profile_idx = 0
+    
+    left_end_time = 0
+    right_end_time = RIGHT_CHANNEL_DELAY_MS
+    
+    current_time = start_time_ms
+    
+    wave_cycle_ms = (
+        WAVE_RAMP_DURATION_MS +
+        WAVE_BOMBARDMENT_DURATION_MS +
+        WAVE_RAMP_DURATION_MS +
+        WAVE_RELAXED_DURATION_MS
+    )
+    
+    while left_idx < len(left_clips) or right_idx < len(right_clips):
+        intensity = get_wave_intensity(current_time)
+        effective_overlap = int(OVERLAP_MS * intensity)
+        
+        wave_cycle_num = current_time // wave_cycle_ms
+        left_owns_bombardment = (wave_cycle_num % 2) == 0
+        
+        place_left = left_idx < len(left_clips) and left_end_time <= right_end_time
+        place_right = right_idx < len(right_clips) and not place_left
+        
+        if place_left and left_idx < len(left_clips):
+            clip = left_clips[left_idx]
+            pos = left_positions[left_idx % len(left_positions)]
+            profile = profiles[left_profile_idx % len(profiles)]
+            
+            use_tempo = current_time > NO_OVERLAP_DURATION_MS
+            processed_clip = apply_profile(clip, profile, apply_tempo=use_tempo)
+            processed_clip = apply_fades(processed_clip)
+            stereo_clip = pan_to_stereo(processed_clip, pos)
+            
+            can_overlap = intensity >= 0.5 and left_owns_bombardment
+            if can_overlap:
+                start_pos = max(0, left_end_time - effective_overlap)
+            else:
+                start_pos = left_end_time
+            
+            end_pos = start_pos + len(stereo_clip)
+            if end_pos > len(result):
+                result += AudioSegment.silent(duration=end_pos - len(result)).set_channels(2)
+            
+            result = result.overlay(stereo_clip, position=start_pos)
+            left_end_time = end_pos
+            left_idx += 1
+            left_profile_idx += 1
+            current_time = max(left_end_time, right_end_time)
+        
+        elif place_right or right_idx < len(right_clips):
+            if right_idx >= len(right_clips):
+                break
+                
+            clip = right_clips[right_idx]
+            pos = right_positions[right_idx % len(right_positions)]
+            profile = profiles[right_profile_idx % len(profiles)]
+            
+            use_tempo = current_time > NO_OVERLAP_DURATION_MS
+            processed_clip = apply_profile(clip, profile, apply_tempo=use_tempo)
+            processed_clip = apply_fades(processed_clip)
+            stereo_clip = pan_to_stereo(processed_clip, pos)
+            
+            can_overlap = intensity >= 0.5 and not left_owns_bombardment
+            if can_overlap:
+                start_pos = max(0, right_end_time - effective_overlap)
+            else:
+                start_pos = right_end_time
+            
+            end_pos = start_pos + len(stereo_clip)
+            if end_pos > len(result):
+                result += AudioSegment.silent(duration=end_pos - len(result)).set_channels(2)
+            
+            result = result.overlay(stereo_clip, position=start_pos)
+            right_end_time = end_pos
+            right_idx += 1
+            right_profile_idx += 1
+            current_time = max(left_end_time, right_end_time)
+        
+        else:
+            break
+    
+    return result
+
+
 def build_intro(left_clips, right_clips, left_positions, right_positions):
     """
     Build gradual intro sequence:
@@ -329,10 +463,16 @@ def weave_stereo(
     5. Second clip on left, with second clip on right starting halfway through
     6. 1s pause
 
-    Main weave:
+    Main weave (for durations < 60 seconds):
     - Left stream starts, right stream starts 2s later
     - Clips overlap within each stream
     - Alternates between hard and soft positions per side
+    
+    Wave-based weave (for durations >= 60 seconds):
+    - Intensity cycles through waves: ramp up -> bombardment (~20s) -> ramp down -> relaxed (~40s)
+    - At bombardment (intensity 1.0): clips overlap within each channel
+    - At relaxed (intensity 0.0): no intra-channel overlap, only L/R interleaving
+    - Results in ~30% bombardment time, ~70% relaxed time per cycle
     """
     if seed is not None:
         random.seed(seed)
@@ -346,14 +486,17 @@ def weave_stereo(
 
     print(f"\nTotal clips available: {len(clips)}")
 
-    # Select subset if target duration specified
+    # Build clip pool for target duration (repeating clips if needed)
     if target_duration_s is not None:
         target_ms = target_duration_s * 1000
-        clips = select_clips_for_duration(
+        wave_mode = target_ms >= WAVE_MIN_DURATION_MS
+        original_count = len(clips)
+        clips = build_clip_pool_for_duration(
             clips, target_ms, OVERLAP_MS, RIGHT_CHANNEL_DELAY_MS
         )
-        estimated = estimate_duration(clips, OVERLAP_MS, RIGHT_CHANNEL_DELAY_MS)
-        print(f"Selected {len(clips)} clips for ~{estimated/1000:.1f}s target duration")
+        estimated = estimate_duration(clips, OVERLAP_MS, RIGHT_CHANNEL_DELAY_MS, wave_mode)
+        repeats = len(clips) / original_count
+        print(f"Using {len(clips)} clips ({repeats:.1f}x) for ~{estimated/1000:.1f}s target duration")
 
     # Create two independent random orderings
     left_order = clips.copy()
@@ -391,62 +534,79 @@ def weave_stereo(
         )
 
         if remaining_left and remaining_right:
-            print("  Building main weave...")
-
-            # Split into initial clips (2s delay) and rest (1s delay)
-            initial_left = remaining_left[:WEAVE_INITIAL_CLIPS]
-            initial_right = remaining_right[:WEAVE_INITIAL_CLIPS]
-            rest_left = remaining_left[WEAVE_INITIAL_CLIPS:]
-            rest_right = remaining_right[WEAVE_INITIAL_CLIPS:]
-
-            # Build initial weave section (2s delay between left/right)
-            initial_left_stream = sequence_clips_with_overlap_and_positions(
-                initial_left, left_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
-            )
-            initial_right_stream = sequence_clips_with_overlap_and_positions(
-                initial_right, right_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
-            )
-
-            # Add 2s delay to initial right stream
-            initial_right_delay = AudioSegment.silent(duration=WEAVE_INITIAL_DELAY_MS).set_channels(2)
-            initial_right_stream = initial_right_delay + initial_right_stream
-
-            # Pad and overlay initial streams
-            initial_max_len = max(len(initial_left_stream), len(initial_right_stream))
-            if len(initial_left_stream) < initial_max_len:
-                initial_left_stream += AudioSegment.silent(duration=initial_max_len - len(initial_left_stream)).set_channels(2)
-            if len(initial_right_stream) < initial_max_len:
-                initial_right_stream += AudioSegment.silent(duration=initial_max_len - len(initial_right_stream)).set_channels(2)
-
-            initial_weave = initial_left_stream.overlay(initial_right_stream)
-
-            # Build rest of weave (1s delay between left/right)
-            if rest_left and rest_right:
-                rest_left_stream = sequence_clips_with_overlap_and_positions(
-                    rest_left, left_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
-                )
-                rest_right_stream = sequence_clips_with_overlap_and_positions(
-                    rest_right, right_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
-                )
-
-                # Add 1s delay to rest right stream
-                rest_right_delay = AudioSegment.silent(duration=WEAVE_NORMAL_DELAY_MS).set_channels(2)
-                rest_right_stream = rest_right_delay + rest_right_stream
-
-                # Pad and overlay rest streams
-                rest_max_len = max(len(rest_left_stream), len(rest_right_stream))
-                if len(rest_left_stream) < rest_max_len:
-                    rest_left_stream += AudioSegment.silent(duration=rest_max_len - len(rest_left_stream)).set_channels(2)
-                if len(rest_right_stream) < rest_max_len:
-                    rest_right_stream += AudioSegment.silent(duration=rest_max_len - len(rest_right_stream)).set_channels(2)
-
-                rest_weave = rest_left_stream.overlay(rest_right_stream)
-                weave = initial_weave + rest_weave
+            # Decide weaving strategy based on target or estimated duration
+            if target_duration_s is not None:
+                use_wave_pattern = target_duration_s >= (WAVE_MIN_DURATION_MS / 1000)
             else:
-                weave = initial_weave
+                estimated_total_ms = estimate_duration(clips, OVERLAP_MS, RIGHT_CHANNEL_DELAY_MS)
+                use_wave_pattern = estimated_total_ms >= WAVE_MIN_DURATION_MS
+            
+            if use_wave_pattern:
+                print("  Building wave-based weave (60+ seconds detected)...")
+                intro_duration_ms = len(intro)
+                weave = build_wave_weave(
+                    remaining_left, remaining_right,
+                    left_positions, right_positions,
+                    start_time_ms=intro_duration_ms
+                )
+                combined = intro + weave
+            else:
+                print("  Building main weave (standard mode)...")
 
-            # Combine intro + weave
-            combined = intro + weave
+                # Split into initial clips (2s delay) and rest (1s delay)
+                initial_left = remaining_left[:WEAVE_INITIAL_CLIPS]
+                initial_right = remaining_right[:WEAVE_INITIAL_CLIPS]
+                rest_left = remaining_left[WEAVE_INITIAL_CLIPS:]
+                rest_right = remaining_right[WEAVE_INITIAL_CLIPS:]
+
+                # Build initial weave section (2s delay between left/right)
+                initial_left_stream = sequence_clips_with_overlap_and_positions(
+                    initial_left, left_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
+                )
+                initial_right_stream = sequence_clips_with_overlap_and_positions(
+                    initial_right, right_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
+                )
+
+                # Add 2s delay to initial right stream
+                initial_right_delay = AudioSegment.silent(duration=WEAVE_INITIAL_DELAY_MS).set_channels(2)
+                initial_right_stream = initial_right_delay + initial_right_stream
+
+                # Pad and overlay initial streams
+                initial_max_len = max(len(initial_left_stream), len(initial_right_stream))
+                if len(initial_left_stream) < initial_max_len:
+                    initial_left_stream += AudioSegment.silent(duration=initial_max_len - len(initial_left_stream)).set_channels(2)
+                if len(initial_right_stream) < initial_max_len:
+                    initial_right_stream += AudioSegment.silent(duration=initial_max_len - len(initial_right_stream)).set_channels(2)
+
+                initial_weave = initial_left_stream.overlay(initial_right_stream)
+
+                # Build rest of weave (1s delay between left/right)
+                if rest_left and rest_right:
+                    rest_left_stream = sequence_clips_with_overlap_and_positions(
+                        rest_left, left_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
+                    )
+                    rest_right_stream = sequence_clips_with_overlap_and_positions(
+                        rest_right, right_positions, OVERLAP_MS, NO_OVERLAP_DURATION_MS
+                    )
+
+                    # Add 1s delay to rest right stream
+                    rest_right_delay = AudioSegment.silent(duration=WEAVE_NORMAL_DELAY_MS).set_channels(2)
+                    rest_right_stream = rest_right_delay + rest_right_stream
+
+                    # Pad and overlay rest streams
+                    rest_max_len = max(len(rest_left_stream), len(rest_right_stream))
+                    if len(rest_left_stream) < rest_max_len:
+                        rest_left_stream += AudioSegment.silent(duration=rest_max_len - len(rest_left_stream)).set_channels(2)
+                    if len(rest_right_stream) < rest_max_len:
+                        rest_right_stream += AudioSegment.silent(duration=rest_max_len - len(rest_right_stream)).set_channels(2)
+
+                    rest_weave = rest_left_stream.overlay(rest_right_stream)
+                    weave = initial_weave + rest_weave
+                else:
+                    weave = initial_weave
+
+                # Combine intro + weave
+                combined = intro + weave
         else:
             # Only intro clips available
             combined = intro

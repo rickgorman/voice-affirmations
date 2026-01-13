@@ -14,13 +14,13 @@ from pydub import AudioSegment
 CLIPS_DIR = "voice_samples"
 REFERENCE_FILE = "voice_reference.wav"
 MIN_DURATION_SEC = 10
-MAX_DURATION_SEC = 30
+MAX_DURATION_SEC = 200
 
 
 def get_recordings():
-    """Get all recording_*.wav files (not tone files)."""
+    """Get all recording_*.wav files (not tone files), newest first."""
     pattern = os.path.join(CLIPS_DIR, "recording_*.wav")
-    return sorted(glob.glob(pattern))
+    return sorted(glob.glob(pattern), reverse=True)
 
 
 def main():

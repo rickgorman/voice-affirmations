@@ -3,9 +3,14 @@
 """
 Generate a series of audio files from text strings using your cloned voice.
 
+By default, each message generates two audio files with different exaggeration
+levels (0.5 and 0.85) for variety in the weaving output. Use -e to generate
+only a single version at a specific exaggeration level.
+
 Usage:
     ./generate_positive_audio_clips.py              # Read from positive_messages.txt
     ./generate_positive_audio_clips.py -n 5         # Sample 5 messages from the file
+    ./generate_positive_audio_clips.py -e 0.5       # Single version at exaggeration 0.5
     ./generate_positive_audio_clips.py "Hi" "Bye"   # Custom strings (bypass file)
     cat messages.txt | ./generate_positive_audio_clips.py   # Read from stdin
 """
@@ -31,6 +36,8 @@ from chatterbox.tts import ChatterboxTTS
 REFERENCE_FILE = "voice_reference.wav"
 DEFAULT_OUTPUT_DIR = "spoken_affirmations"
 MESSAGES_FILE = "positive_messages.txt"
+
+EXAGGERATION_LEVELS = [0.5, 0.85]
 
 # Stock positive affirmations (used to generate default file)
 STOCK_MESSAGES = [
@@ -71,7 +78,7 @@ STOCK_MESSAGES = [
     "I am exactly where I need to be right now.",
 ]
 
-DEFAULT_SAMPLE_COUNT = 6
+DEFAULT_SAMPLE_COUNT = -1  # -1 means all messages
 
 
 def get_device():
@@ -155,11 +162,11 @@ def main():
     parser = argparse.ArgumentParser(description="Generate audio files from text strings")
     parser.add_argument("messages", nargs="*", help="Text strings to speak (overrides file)")
     parser.add_argument("-n", "--count", type=int, default=DEFAULT_SAMPLE_COUNT,
-                        help=f"Number of messages to sample (default: {DEFAULT_SAMPLE_COUNT}, use -1 for all)")
+                        help="Number of messages to sample (default: all, use -1 for all)")
     parser.add_argument("-o", "--output-dir", default=DEFAULT_OUTPUT_DIR,
                         help=f"Output directory (default: {DEFAULT_OUTPUT_DIR})")
-    parser.add_argument("-e", "--exaggeration", type=float, default=0.5,
-                        help="Emotion exaggeration (0-1, default 0.5)")
+    parser.add_argument("-e", "--exaggeration", type=float, default=None,
+                        help="Emotion exaggeration (0-1). If omitted, generates both 0.5 and 0.85 versions")
     args = parser.parse_args()
 
     messages = get_messages(args)
@@ -185,25 +192,39 @@ def main():
 
     model = ChatterboxTTS.from_pretrained(device=device)
 
-    print(f"\nGenerating {len(messages)} audio files...\n")
+    if args.exaggeration is not None:
+        exag_levels = [args.exaggeration]
+    else:
+        exag_levels = EXAGGERATION_LEVELS
+
+    total_files = len(messages) * len(exag_levels)
+    if len(exag_levels) > 1:
+        print(f"\nGenerating {total_files} audio files ({len(messages)} messages × {len(exag_levels)} exaggeration levels)...\n")
+    else:
+        print(f"\nGenerating {total_files} audio files (exaggeration={exag_levels[0]})...\n")
 
     generated_files = []
     for i, text in enumerate(messages, 1):
-        filename = f"{i:02d}_{sanitize_filename(text)}.wav"
-        output_path = os.path.join(args.output_dir, filename)
-
         print(f"[{i}/{len(messages)}] \"{text[:50]}{'...' if len(text) > 50 else ''}\"")
 
-        wav = model.generate(
-            text,
-            audio_prompt_path=REFERENCE_FILE,
-            exaggeration=args.exaggeration,
-        )
+        for exag in exag_levels:
+            if len(exag_levels) > 1:
+                exag_label = f"e{int(exag * 100)}"
+                filename = f"{i:02d}_{sanitize_filename(text)}_{exag_label}.wav"
+            else:
+                filename = f"{i:02d}_{sanitize_filename(text)}.wav"
+            output_path = os.path.join(args.output_dir, filename)
 
-        ta.save(output_path, wav, model.sr)
-        duration = wav.shape[1] / model.sr
-        print(f"         -> {filename} ({duration:.1f}s)")
-        generated_files.append(output_path)
+            wav = model.generate(
+                text,
+                audio_prompt_path=REFERENCE_FILE,
+                exaggeration=exag,
+            )
+
+            ta.save(output_path, wav, model.sr)
+            duration = wav.shape[1] / model.sr
+            print(f"         -> {filename} ({duration:.1f}s)")
+            generated_files.append(output_path)
 
     print(f"\nDone! Generated {len(generated_files)} files in {args.output_dir}/")
 
