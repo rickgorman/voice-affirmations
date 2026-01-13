@@ -1,6 +1,6 @@
 ![Voice Affirmations](hero.png)
 
-Generate personalized audio affirmations in your own cloned voice, then weave them into an immersive stereo soundscape to transform your mindset.
+Your voice, your affirmations, woven into an immersive stereo soundscape.
 
 ## Features
 
