@@ -29,6 +29,14 @@ This will:
 
 ## Quick Start
 
+```bash
+./record.py                         # Record your voice (Ctrl+C to stop)
+./prepare.py                        # Create voice reference
+./generate_positive_audio_clips.py  # Generate affirmation clips
+./weave.py                          # Weave into stereo soundscape
+afplay spoken_messages_001.wav      # Listen (use headphones!)
+```
+
 ### 1. Record samples of your voice
 
 ```bash
